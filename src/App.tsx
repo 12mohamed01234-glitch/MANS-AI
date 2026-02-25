@@ -39,13 +39,15 @@ import {
   Plus as PlusIcon,
   ChevronDown,
   Copy,
-  Check
+  Check,
+  ArrowDown
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import Markdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { cn } from '@/src/lib/utils';
+import { ThinkingLevel } from "@google/genai";
 
 // MANS AI Identity and System Instruction
 const SYSTEM_INSTRUCTION = `You are MANS AI ULTIMATE ELITE, a high-performance multimodal AI system engineered for deep reasoning, structured execution, system architecture design, and real-world impact.
@@ -217,6 +219,7 @@ interface AttachedFile {
 interface Message {
   role: 'user' | 'assistant';
   content: string;
+  thought?: string;
   timestamp: Date;
   files?: AttachedFile[];
 }
@@ -232,32 +235,68 @@ export default function App() {
   const [isShoppingMode, setIsShoppingMode] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
+  const [showScrollButton, setShowScrollButton] = useState(false);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const aiRef = useRef<GoogleGenAI | null>(null);
 
+  const showToast = (message: string, type: 'success' | 'info' = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 3000);
+  };
+
   const handleShare = async () => {
     try {
       const chatContent = messages.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n\n');
       await navigator.clipboard.writeText(chatContent);
-      alert('Chat content copied to clipboard!');
+      showToast('Chat content copied to clipboard!');
     } catch (err) {
       console.error('Failed to copy: ', err);
     }
   };
 
-  const copyToClipboard = async (text: string) => {
+  const copyToClipboard = async (text: string, id: string) => {
     try {
       await navigator.clipboard.writeText(text);
+      setCopiedId(id);
+      showToast('Copied to clipboard!');
+      setTimeout(() => setCopiedId(null), 2000);
     } catch (err) {
       console.error('Failed to copy: ', err);
+    }
+  };
+
+  const handleScroll = () => {
+    if (scrollRef.current) {
+      const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
+      const isAtBottom = scrollHeight - scrollTop - clientHeight < 100;
+      setShowScrollButton(!isAtBottom);
+    }
+  };
+
+  const scrollToBottom = () => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTo({
+        top: scrollRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
     }
   };
 
   useEffect(() => {
-    if (scrollRef.current) {
+    const scrollContainer = scrollRef.current;
+    if (scrollContainer) {
+      scrollContainer.addEventListener('scroll', handleScroll);
+      return () => scrollContainer.removeEventListener('scroll', handleScroll);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (scrollRef.current && !showScrollButton) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages, isLoading]);
@@ -346,77 +385,21 @@ export default function App() {
   };
 
   const handleSendWithVoice = async (voiceFile: AttachedFile) => {
-    setIsLoading(true);
     const userMessage: Message = {
       role: 'user',
       content: "Voice message",
       timestamp: new Date(),
       files: [voiceFile],
     };
-
-    setMessages(prev => [...prev, userMessage]);
-
-    try {
-      if (!aiRef.current) {
-        aiRef.current = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
-      }
-
-      const parts: any[] = [
-        { text: "The user sent a voice message. Please listen to it and respond appropriately in Egyptian Sha'abi dialect." },
-        {
-          inlineData: {
-            data: voiceFile.data,
-            mimeType: voiceFile.type
-          }
+    await processAIRequest(userMessage, [
+      { text: "The user sent a voice message. Please listen to it and respond appropriately in Egyptian Sha'abi dialect." },
+      {
+        inlineData: {
+          data: voiceFile.data,
+          mimeType: voiceFile.type
         }
-      ];
-
-      const systemPrompt = `${SYSTEM_INSTRUCTION}\n\nCURRENT STATUS:\nThinking Mode: ${isThinkingMode ? 'ENABLED' : 'DISABLED'}\nDeep Think Mode: ${isDeepThink ? 'ENABLED' : 'DISABLED'}\nShopping Research Mode: ${isShoppingMode ? 'ENABLED' : 'DISABLED'}`;
-
-      const stream = await aiRef.current.models.generateContentStream({
-        model: "gemini-3-flash-preview",
-        contents: [
-          ...messages.map(m => ({
-            role: m.role === 'assistant' ? 'model' : 'user',
-            parts: [{ text: m.content }]
-          })),
-          { role: 'user', parts }
-        ],
-        config: {
-          systemInstruction: systemPrompt,
-        }
-      });
-
-      let fullText = "";
-      const assistantMessage: Message = {
-        role: 'assistant',
-        content: "",
-        timestamp: new Date(),
-      };
-
-      setMessages(prev => [...prev, assistantMessage]);
-
-      for await (const chunk of stream) {
-        fullText += chunk.text || "";
-        setMessages(prev => {
-          const newMessages = [...prev];
-          newMessages[newMessages.length - 1] = {
-            ...newMessages[newMessages.length - 1],
-            content: fullText
-          };
-          return newMessages;
-        });
       }
-    } catch (error) {
-      console.error("AI Error:", error);
-      setMessages(prev => [...prev, {
-        role: 'assistant',
-        content: "يا باشا حصل مشكلة وأنا بحاول أسمع الصوت ده. جرب تاني كده.",
-        timestamp: new Date(),
-      }]);
-    } finally {
-      setIsLoading(false);
-    }
+    ]);
   };
 
   const handleSend = async () => {
@@ -429,46 +412,71 @@ export default function App() {
       files: attachedFiles.length > 0 ? [...attachedFiles] : undefined,
     };
 
-    setMessages(prev => [...prev, userMessage]);
     const currentInput = input;
     const currentFiles = [...attachedFiles];
     setInput('');
     setAttachedFiles([]);
+    
+    const parts: any[] = [{ text: currentInput || "Analyze the attached content." }];
+    currentFiles.forEach(file => {
+      parts.push({
+        inlineData: {
+          data: file.data,
+          mimeType: file.type || 'application/octet-stream'
+        }
+      });
+    });
+
+    await processAIRequest(userMessage, parts);
+  };
+
+  const processAIRequest = async (userMessage: Message, parts: any[]) => {
     setIsLoading(true);
+    setMessages(prev => [...prev, userMessage]);
 
     try {
       if (!aiRef.current) {
         aiRef.current = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
       }
 
-      const parts: any[] = [{ text: currentInput || "Analyze the attached content." }];
-      
-      currentFiles.forEach(file => {
-        parts.push({
-          inlineData: {
-            data: file.data,
-            mimeType: file.type || 'application/octet-stream'
-          }
-        });
-      });
-
       const systemPrompt = `${SYSTEM_INSTRUCTION}\n\nCURRENT STATUS:\nThinking Mode: ${isThinkingMode ? 'ENABLED' : 'DISABLED'}\nDeep Think Mode: ${isDeepThink ? 'ENABLED' : 'DISABLED'}\nShopping Research Mode: ${isShoppingMode ? 'ENABLED' : 'DISABLED'}`;
+
+      // Build history with multimodal support
+      const history = messages.map(m => {
+        const messageParts: any[] = [{ text: m.content }];
+        if (m.files) {
+          m.files.forEach(f => {
+            messageParts.push({
+              inlineData: {
+                data: f.data,
+                mimeType: f.type
+              }
+            });
+          });
+        }
+        return {
+          role: m.role === 'assistant' ? 'model' : 'user',
+          parts: messageParts
+        };
+      });
 
       const stream = await aiRef.current.models.generateContentStream({
         model: "gemini-3-flash-preview",
         contents: [
-          ...messages.map(m => ({
-            role: m.role === 'assistant' ? 'model' : 'user',
-            parts: [{ text: m.content }]
-          })),
+          ...history,
           { role: 'user', parts }
         ],
         config: {
           systemInstruction: systemPrompt,
+          tools: (isShoppingMode || isDeepThink) ? [{ googleSearch: {} }] : undefined,
+          thinkingConfig: (isThinkingMode || isDeepThink) ? {
+            thinkingLevel: isDeepThink ? ThinkingLevel.HIGH : ThinkingLevel.LOW
+          } : undefined
         }
       });
 
       let fullText = "";
+      let fullThought = "";
       const assistantMessage: Message = {
         role: 'assistant',
         content: "",
@@ -478,12 +486,21 @@ export default function App() {
       setMessages(prev => [...prev, assistantMessage]);
 
       for await (const chunk of stream) {
+        // Handle text
         fullText += chunk.text || "";
+        
+        // Handle thoughts if available (Gemini 3 specific)
+        const thoughtPart = chunk.candidates?.[0]?.content?.parts?.find((p: any) => p.thought);
+        if (thoughtPart) {
+          fullThought += thoughtPart.text || "";
+        }
+
         setMessages(prev => {
           const newMessages = [...prev];
           newMessages[newMessages.length - 1] = {
             ...newMessages[newMessages.length - 1],
-            content: fullText
+            content: fullText,
+            thought: fullThought || undefined
           };
           return newMessages;
         });
@@ -492,7 +509,7 @@ export default function App() {
       console.error("AI Error:", error);
       setMessages(prev => [...prev, {
         role: 'assistant',
-        content: "يا صاحبي حصل غلطة وأنا بطلع الرد. معلش جرب تبعت تاني.",
+        content: "يا باشا حصل مشكلة وأنا بحاول أرد عليك. جرب تاني كده.",
         timestamp: new Date(),
       }]);
     } finally {
@@ -754,13 +771,22 @@ export default function App() {
                         ? "bg-transparent text-zinc-200" 
                         : "bg-zinc-800 border border-white/5 text-white"
                     )}>
+                      {message.thought && (
+                        <div className="mb-3 p-3 bg-zinc-800/50 border-l-2 border-emerald-500/50 rounded-r-xl text-xs text-zinc-400 italic font-mono">
+                          <div className="flex items-center gap-2 mb-1 not-italic font-bold text-[10px] text-emerald-500 uppercase tracking-widest">
+                            <Brain size={12} />
+                            <span>Thinking Process</span>
+                          </div>
+                          {message.thought}
+                        </div>
+                      )}
                       {message.role === 'assistant' && (
                         <button 
-                          onClick={() => copyToClipboard(message.content)}
+                          onClick={() => copyToClipboard(message.content, `msg-${index}`)}
                           className="absolute -right-8 md:-right-10 top-0 p-2 text-zinc-500 hover:text-white opacity-100 md:opacity-0 md:group-hover/msg:opacity-100 transition-all"
                           title="Copy message"
                         >
-                          <Copy size={14} className="md:w-4 md:h-4" />
+                          {copiedId === `msg-${index}` ? <Check size={14} className="text-emerald-500" /> : <Copy size={14} className="md:w-4 md:h-4" />}
                         </button>
                       )}
                       <div className="markdown-body dark text-sm md:text-base">
@@ -769,16 +795,17 @@ export default function App() {
                             code({ node, inline, className, children, ...props }: any) {
                               const match = /language-(\w+)/.exec(className || '');
                               const codeString = String(children).replace(/\n$/, '');
+                              const codeId = `code-${index}-${Math.random().toString(36).substr(2, 9)}`;
                               
                               return !inline && match ? (
                                 <div className="relative group/code my-3 md:my-4 rounded-xl overflow-hidden border border-white/10">
                                   <div className="flex items-center justify-between px-3 py-1.5 md:px-4 md:py-2 bg-zinc-900/50 border-b border-white/5">
                                     <span className="text-[9px] md:text-[10px] font-bold text-zinc-500 uppercase tracking-wider">{match[1]}</span>
                                     <button 
-                                      onClick={() => copyToClipboard(codeString)}
+                                      onClick={() => copyToClipboard(codeString, codeId)}
                                       className="text-zinc-500 hover:text-white transition-colors p-1"
                                     >
-                                      <Copy size={12} className="md:w-3.5 md:h-3.5" />
+                                      {copiedId === codeId ? <Check size={12} className="text-emerald-500" /> : <Copy size={12} className="md:w-3.5 md:h-3.5" />}
                                     </button>
                                   </div>
                                   <SyntaxHighlighter
@@ -816,6 +843,15 @@ export default function App() {
               ))}
             </AnimatePresence>
             
+            {showScrollButton && (
+              <button 
+                onClick={scrollToBottom}
+                className="fixed bottom-24 right-4 md:right-8 p-2 bg-zinc-800 border border-white/10 rounded-full text-white shadow-lg hover:bg-zinc-700 transition-all z-20 animate-in fade-in zoom-in"
+              >
+                <ArrowDown size={20} />
+              </button>
+            )}
+
             {isLoading && (
               <motion.div 
                 initial={{ opacity: 0 }}
@@ -827,7 +863,9 @@ export default function App() {
                 </div>
                 <div className="bg-transparent px-4 py-3 rounded-2xl flex items-center gap-2">
                   <Loader2 size={16} className="animate-spin text-emerald-500" />
-                  <span className="text-sm text-zinc-500 font-medium">MANS AI is thinking...</span>
+                  <span className="text-sm text-zinc-500 font-medium animate-pulse">
+                    {isDeepThink ? "Deep Researching..." : isThinkingMode ? "Thinking..." : isShoppingMode ? "Searching products..." : "MANS AI is thinking..."}
+                  </span>
                 </div>
               </motion.div>
             )}
@@ -954,6 +992,26 @@ export default function App() {
                               </div>
                               {isShoppingMode && <div className="w-1.5 h-1.5 rounded-full bg-emerald-400" />}
                             </button>
+                            <div className="h-px bg-white/5 my-1" />
+                            <button 
+                              onClick={() => { setMessages([]); setIsPlusMenuOpen(false); showToast('Chat cleared'); }}
+                              className="w-full flex items-center justify-between px-2.5 py-2 md:px-3 md:py-2.5 text-xs md:text-sm text-zinc-200 hover:bg-white/5 rounded-xl transition-colors"
+                            >
+                              <div className="flex items-center gap-3">
+                                <SquarePen size={16} className="text-zinc-400 md:w-4.5 md:h-4.5" />
+                                <span>Clear chat</span>
+                              </div>
+                            </button>
+                            <button 
+                              onClick={() => { setIsPlusMenuOpen(false); showToast('MANS AI ULTIMATE ELITE v2.5 Active', 'info'); }}
+                              className="w-full flex items-center justify-between px-2.5 py-2 md:px-3 md:py-2.5 text-xs md:text-sm text-zinc-200 hover:bg-white/5 rounded-xl transition-colors"
+                            >
+                              <div className="flex items-center gap-3">
+                                <MoreHorizontal size={16} className="text-zinc-400" />
+                                <span>System Info</span>
+                              </div>
+                              <ChevronRight size={14} className="text-zinc-600" />
+                            </button>
                           </motion.div>
                         </>
                       )}
@@ -1009,6 +1067,23 @@ export default function App() {
           </div>
         </div>
       </main>
+
+      {/* Toast Notification */}
+      <AnimatePresence>
+        {toast && (
+          <motion.div
+            initial={{ opacity: 0, y: 50, x: "-50%" }}
+            animate={{ opacity: 1, y: 0, x: "-50%" }}
+            exit={{ opacity: 0, y: 20, x: "-50%" }}
+            className={cn(
+              "fixed bottom-24 left-1/2 z-[100] px-4 py-2 rounded-full text-xs font-bold shadow-2xl border backdrop-blur-md",
+              toast.type === 'success' ? "bg-emerald-500/90 border-emerald-400 text-white" : "bg-zinc-800/90 border-white/10 text-zinc-200"
+            )}
+          >
+            {toast.message}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
